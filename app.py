@@ -1,46 +1,21 @@
 import streamlit as st
-from huggingface_hub import InferenceClient
-import base64
-import io
+from google import genai
 import time
 from PIL import Image
 
 st.set_page_config(page_title="AI 윤리 - 부정행위 방지 안경", page_icon="👓")
-st.title("👓 AI 안경 부정행위 감지 시스템")
-st.write("비전 AI가 스마트 안경에 포착된 시야를 분석하여 부정행위 여부를 판별하고 문제를 풀이합니다.")
+st.title("👓 AI 안경 부정행위 감지 시스템 (Google Gemini)")
+st.write("Gemini 비전 AI가 스마트 안경에 포착된 시야를 직접 분석하여 부정행위 여부를 판별하고 문제를 풀이합니다.")
 
-with st.sidebar:
-    st.header("⚙️ AI 연결 설정")
-    hf_token = st.text_input("기존 Hugging Face 토큰(hf_...)을 입력하세요", type="password")
+# Secrets에 저장된 API 키를 자동으로 불러오기
+if "GOOGLE_API_KEY" in st.secrets:
+    google_api_key = st.secrets["GOOGLE_API_KEY"]
+else:
+    st.error("⚠️ Streamlit Cloud 설정(Secrets)에 GOOGLE_API_KEY가 등록되지 않았습니다.")
+    st.stop()
 
-def encode_image(img):
-    buffered = io.BytesIO()
-    img.save(buffered, format="JPEG")
-    return base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-# 현재 허깅페이스에서 승인 없이 바로 작동하는 비전 모델들을 순서대로 자동 시도하는 함수
-def call_vision_ai(client, messages, max_tokens=500):
-    models = [
-        "Qwen/Qwen2.5-VL-72B-Instruct",
-        "Qwen/Qwen2-VL-7B-Instruct",
-        "HuggingFaceM4/idefics2-8b"
-    ]
-    last_error = None
-    for model_name in models:
-        try:
-            response = client.chat_completion(
-                model=model_name,
-                messages=messages,
-                max_tokens=max_tokens
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            last_error = e
-            continue
-    raise last_error
-
-# 1. 비전 AI 이미지 분석 함수
-def analyze_image_with_ai(client, base64_img):
+# 1. Gemini 비전 AI가 사진을 보고 수험표/새로운 문제/OMR 카드를 판별하는 함수
+def analyze_image_with_gemini(client, img):
     prompt = """
     이 사진은 스마트 안경으로 촬영된 이미지입니다. 
     사진 속에 다음 3가지 요소가 있는지 확인해주세요.
@@ -53,32 +28,24 @@ def analyze_image_with_ai(client, base64_img):
     해당하는 것이 하나도 없으면 '없음'이라고만 출력하세요. 다른 설명은 절대 쓰지 마세요.
     """
     
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
-            ]
-        }
-    ]
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[prompt, img]
+    )
     
-    result_text = call_vision_ai(client, messages, max_tokens=100)
+    result_text = response.text.strip()
     st.write(f"**AI 1차 시각 분석 결과:** `{result_text}`")
     return [item.strip() for item in result_text.split(',')]
 
-# 2. 통과 시 문제 풀이 함수
-def solve_problem_with_ai(client, base64_img):
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "이 사진에 있는 문제를 정확히 읽고, 어떤 과목인지 파악한 뒤 학생이 이해하기 쉽게 단계별 풀이 과정과 최종 정답을 한국어로 알려줘."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
-            ]
-        }
-    ]
-    return call_vision_ai(client, messages, max_tokens=800)
+# 2. 통과 시 어떤 과목/유형의 문제든 Gemini가 직접 풀어주는 함수
+def solve_problem_with_gemini(client, img):
+    prompt = "이 사진에 있는 문제를 정확히 읽고, 어떤 과목인지 파악한 뒤 학생이 이해하기 쉽게 단계별 풀이 과정과 최종 정답을 한국어로 알려줘."
+    
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[prompt, img]
+    )
+    return response.text
 
 # 3. 핵심 검사 함수: exam_check(exam, total)
 def exam_check(exam, total):
@@ -126,19 +93,15 @@ if uploaded_image is not None:
     st.image(uploaded_image, caption="안경에 포착된 화면", use_container_width=True)
     
     if st.button("🔍 AI 윤리 검사 및 문제 풀이 실행", type="primary"):
-        if not hf_token:
-            st.error("왼쪽 사이드바에 Hugging Face 토큰을 먼저 입력해주세요!")
-        else:
-            client = InferenceClient(api_key=hf_token)
-            base64_img = encode_image(uploaded_image)
+        client = genai.Client(api_key=google_api_key)
+        
+        with st.spinner("Gemini 비전 AI가 사진 속 사물과 상황을 분석하는 중입니다..."):
+            exam = analyze_image_with_gemini(client, uploaded_image)
+            total = 0
+            is_safe = exam_check(exam, total)
             
-            with st.spinner("실제 비전 AI가 사진 속 사물과 상황을 분석하는 중입니다..."):
-                exam = analyze_image_with_ai(client, base64_img)
-                total = 0
-                is_safe = exam_check(exam, total)
-                
-                if is_safe:
-                    with st.spinner("AI가 문제를 읽고 풀이를 작성하는 중입니다..."):
-                        solution = solve_problem_with_ai(client, base64_img)
-                        st.markdown("### 📝 AI 문제 풀이 결과")
-                        st.write(solution)
+            if is_safe:
+                with st.spinner("Gemini가 문제를 읽고 풀이를 작성하는 중입니다..."):
+                    solution = solve_problem_with_gemini(client, uploaded_image)
+                    st.markdown("### 📝 AI 문제 풀이 결과")
+                    st.write(solution)
