@@ -7,21 +7,39 @@ from PIL import Image
 
 st.set_page_config(page_title="AI 윤리 - 부정행위 방지 안경", page_icon="👓")
 st.title("👓 AI 안경 부정행위 감지 시스템")
-st.write("실제 비전 AI가 스마트 안경에 포착된 시야를 분석하여 부정행위 여부를 판별하고 문제를 풀이합니다.")
+st.write("비전 AI가 스마트 안경에 포착된 시야를 분석하여 부정행위 여부를 판별하고 문제를 풀이합니다.")
 
-# 사이드바에서 Hugging Face 토큰 입력받기
 with st.sidebar:
     st.header("⚙️ AI 연결 설정")
-    hf_token = st.text_input("Hugging Face 토큰(hf_...)을 입력하세요", type="password")
-    st.caption("Hugging Face 무료 가입 후 Settings > Access Tokens에서 발급받을 수 있습니다.")
+    hf_token = st.text_input("기존 Hugging Face 토큰(hf_...)을 입력하세요", type="password")
 
-# 이미지를 AI에게 전송할 수 있는 형태로 변환
 def encode_image(img):
     buffered = io.BytesIO()
     img.save(buffered, format="JPEG")
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-# 1. 실제 비전 AI가 사진을 보고 수험표/새로운 문제/OMR 카드를 판별하는 함수
+# 현재 허깅페이스에서 승인 없이 바로 작동하는 비전 모델들을 순서대로 자동 시도하는 함수
+def call_vision_ai(client, messages, max_tokens=500):
+    models = [
+        "Qwen/Qwen2.5-VL-72B-Instruct",
+        "Qwen/Qwen2-VL-7B-Instruct",
+        "HuggingFaceM4/idefics2-8b"
+    ]
+    last_error = None
+    for model_name in models:
+        try:
+            response = client.chat_completion(
+                model=model_name,
+                messages=messages,
+                max_tokens=max_tokens
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            last_error = e
+            continue
+    raise last_error
+
+# 1. 비전 AI 이미지 분석 함수
 def analyze_image_with_ai(client, base64_img):
     prompt = """
     이 사진은 스마트 안경으로 촬영된 이미지입니다. 
@@ -45,34 +63,22 @@ def analyze_image_with_ai(client, base64_img):
         }
     ]
     
-    response = client.chat_completion(
-        model="Qwen/Qwen2.5-VL-7B-Instruct",
-        messages=messages,
-        max_tokens=100
-    )
-    
-    result_text = response.choices[0].message.content.strip()
+    result_text = call_vision_ai(client, messages, max_tokens=100)
     st.write(f"**AI 1차 시각 분석 결과:** `{result_text}`")
     return [item.strip() for item in result_text.split(',')]
 
-# 2. 통과 시 어떤 과목/유형의 문제든 실제 AI가 풀어주는 함수
+# 2. 통과 시 문제 풀이 함수
 def solve_problem_with_ai(client, base64_img):
     messages = [
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "이 사진에 있는 문제를 정확히 읽고, 어떤 과목인지 파악한 뒤 학생이 이해하기 쉽게 단계별 풀이 과정과 최종 정답을 알려줘."},
+                {"type": "text", "text": "이 사진에 있는 문제를 정확히 읽고, 어떤 과목인지 파악한 뒤 학생이 이해하기 쉽게 단계별 풀이 과정과 최종 정답을 한국어로 알려줘."},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
             ]
         }
     ]
-    
-    response = client.chat_completion(
-        model="Qwen/Qwen2.5-VL-7B-Instruct",
-        messages=messages,
-        max_tokens=800
-    )
-    return response.choices[0].message.content
+    return call_vision_ai(client, messages, max_tokens=800)
 
 # 3. 핵심 검사 함수: exam_check(exam, total)
 def exam_check(exam, total):
