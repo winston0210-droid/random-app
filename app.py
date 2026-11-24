@@ -29,7 +29,7 @@ def analyze_image_with_gemini(client, img):
     """
     
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         contents=[prompt, img]
     )
     
@@ -42,7 +42,7 @@ def solve_problem_with_gemini(client, img):
     prompt = "이 사진에 있는 문제를 정확히 읽고, 어떤 과목인지 파악한 뒤 학생이 이해하기 쉽게 단계별 풀이 과정과 최종 정답을 한국어로 알려줘."
     
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         contents=[prompt, img]
     )
     return response.text
