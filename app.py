@@ -1,9 +1,8 @@
 import streamlit as st
 from google import genai
-from google.genai import errors
+from google.genai import types
 import time
 from PIL import Image
-import random
 
 st.set_page_config(page_title="AI 윤리 - 부정행위 감지 안경", page_icon="👓", layout="centered")
 st.title("👓 AI 안경 부정행위 감지 시스템")
@@ -15,8 +14,16 @@ else:
     st.error("⚠️ Streamlit Cloud 설정(Secrets)에 GOOGLE_API_KEY가 등록되지 않았습니다.")
     st.stop()
 
-# 사용 가능한 모델들을 번갈아 가며 재시도하는 함수
-def process_image_with_fallback(client, img):
+# 사진 용량이 크면 전송이 느리므로 가로 800px 이하로 축소
+def resize_image(img, max_width=800):
+    if img.width > max_width:
+        ratio = max_width / img.width
+        new_height = int(img.height * ratio)
+        return img.resize((max_width, new_height))
+    return img
+
+# 실제 존재하는 모델만 사용하여 15초 내로 응답받는 함수
+def process_image_with_timeout(client, img):
     prompt = """
     이 사진은 스마트 안경으로 촬영된 이미지입니다. 다음 두 가지 임무를 순서대로 수행하세요.
 
@@ -31,9 +38,9 @@ def process_image_with_fallback(client, img):
     [임무 2] 두 번째 줄부터는 사진에 있는 문제를 정확히 읽고, 어떤 과목인지 파악한 뒤 학생이 이해하기 쉽게 단계별 풀이 과정과 최종 정답을 한국어로 작성하세요.
     """
     
-    # 번갈아 시도할 모델 목록
-    models_to_try = ["gemini-3.8-flash", "gemini-3.8-flash-lite"]
-    max_retries = 6
+    # 구글이 공식 안내한 최신 모델 목록
+    models_to_try = ["gemini-3.8-flash", "gemini-3.0-flash"]
+    max_retries = 4
     
     for attempt in range(max_retries):
         current_model = models_to_try[attempt % len(models_to_try)]
@@ -45,15 +52,11 @@ def process_image_with_fallback(client, img):
             return response.text.strip()
             
         except Exception as e:
-            err_msg = str(e)
-            # 503(서버 과부하) 또는 429(요청 과다)일 경우 자동 재시도
-            if ("503" in err_msg or "429" in err_msg or "UNAVAILABLE" in err_msg) and attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 2
-                st.warning(f"🔄 서버 혼잡으로 {wait_time}초 후 다른 모델로 다시 시도합니다... (시도 {attempt+2}/{max_retries})")
-                time.sleep(wait_time)
+            if attempt < max_retries - 1:
+                st.warning(f"🔄 서버 혼잡으로 즉시 다른 모델({models_to_try[(attempt+1)%2]})로 재시도합니다... ({attempt+2}/{max_retries})")
+                time.sleep(2)
                 continue
             else:
-                # 진짜 에러 내용을 숨기지 않고 반환
                 raise e
 
 def exam_check(exam, total):
@@ -86,19 +89,23 @@ cam_file = st.camera_input("카메라로 사물을 비추고 촬영 버튼을 �
 
 target_image = None
 if uploaded_image is not None:
-    target_image = Image.open(uploaded_image).convert("RGB")
+    target_image = resize_image(Image.open(uploaded_image).convert("RGB"))
 elif cam_file is not None:
-    target_image = Image.open(cam_file).convert("RGB")
+    target_image = resize_image(Image.open(cam_file).convert("RGB"))
 
 if target_image is not None:
     st.image(target_image, caption="안경에 포착된 화면", width="stretch")
     
     if st.button("🔍 AI 윤리 안경 가동 (부정행위 판별 및 풀이)", type="primary"):
-        client = genai.Client(api_key=google_api_key)
+        # timeout은 초(seconds) 단위이므로 15로 설정 (15초 제한)
+        client = genai.Client(
+            api_key=google_api_key,
+            http_options=types.HttpOptions(timeout=15)
+        )
         
-        with st.spinner("AI가 구글 서버에 접속하여 분석 중입니다..."):
+        with st.spinner("AI가 분석 중입니다... (최대 15초 소요)"):
             try:
-                full_result = process_image_with_fallback(client, target_image)
+                full_result = process_image_with_timeout(client, target_image)
                 
                 if full_result:
                     lines = full_result.split("\n", 1)
